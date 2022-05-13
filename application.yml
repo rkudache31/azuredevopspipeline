@@ -1,0 +1,109 @@
+name: appservicepipeline
+trigger:
+- none
+resources:
+- repo: self
+pool: 
+ vmImage: 'windows-2019'
+
+parameters:
+ - name: Envirnment_dtl
+   type: object
+   default: ['dev', 'preprod']
+
+stages:
+  - ${{ each env in parameters.Envirnment_dtl }}:
+
+    - stage: terraform_infra
+      variables:
+      - template: var-${{ env }}.yml
+      jobs:
+       - job: terraform_infra
+         variables:
+         - template: var-${{ env }}.yml
+         steps:
+          - checkout: self
+
+          - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+            displayName: 'Install Terraform latest'
+
+          - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV2@2
+            displayName: 'Terraform : Init'
+            inputs:
+              workingDirectory: terraform
+              backendServiceArm: 'Sarang-Paid (28e515cd-5830-4602-b343-8bfc4032d66c)'
+              backendAzureRmResourceGroupName: tfstatedemo
+              backendAzureRmStorageAccountName: mystgtfstate
+              backendAzureRmContainerName: tfstate
+              backendAzureRmKey: appservice.tfstate
+
+          - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV2@2
+            displayName: 'Terraform : Plan'
+            inputs:
+              command: plan
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+              environmentServiceNameAzureRM: 'Sarang-Paid (28e515cd-5830-4602-b343-8bfc4032d66c)'
+              commandOptions: '--var-file="${{ variables.tfvarsfile }}"'
+
+          - task: ms-devlabs.custom-terraform-tasks.custom-terraform-release-task.TerraformTaskV2@2
+            displayName: 'Terraform : Apply'
+            inputs:
+              command: apply
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+              environmentServiceNameAzureRM: 'Sarang-Paid (28e515cd-5830-4602-b343-8bfc4032d66c)'
+              commandOptions: '--var-file="${{ variables.tfvarsfile }}"'
+          
+    - stage:  Application_Build
+      variables:
+      - template: var-${{ env }}.yml
+      jobs:
+       - job: terraform_infra
+         variables:
+         - template: var-${{ env }}.yml
+         steps:
+          - checkout: none
+
+          - task: NuGetToolInstaller@1
+ 
+          - task: NuGetCommand@2
+            inputs:
+              restoreSolution: '**\*.sln'     
+                  
+          - task: SonarCloudPrepare@1
+            inputs:
+              SonarCloud: 'testsonarcloud'
+              organization: 'ravindra0923'
+              scannerMode: 'MSBuild'
+              projectKey: 'ravindra0923_testappsev'
+              projectName: 'testappsev'        
+
+          - task: VSBuild@1
+            displayName: 'Build solution'
+            inputs:
+              solution: '**\*.sln'
+              msbuildArgs: '/p:DeployOnBuild=true /p:WebPublishMethod=Package /p:PackageAsSingleFile=true /p:SkipInvalidConfigurations=true /p:PackageLocation="$(build.artifactstagingdirectory)\\"'
+              platform: '$(BuildPlatform)'
+              configuration: '$(BuildConfiguration)' 
+
+          - task: SonarCloudAnalyze@1
+          - task: SonarCloudPublish@1
+            inputs:
+              pollingTimeoutSec: '300'
+
+          - task: PublishSymbols@2
+            displayName: 'Publish symbols path'
+            inputs:
+              SearchPattern: '**\bin\**\*.pdb'
+              PublishSymbols: false
+              continueOnError: true
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Artifact'
+            inputs:
+              PathtoPublish: '$(build.artifactstagingdirectory)'
+              ArtifactName: '$(Parameters.ArtifactName)'
+            condition: succeededOrFailed()
+
+
+          
+
